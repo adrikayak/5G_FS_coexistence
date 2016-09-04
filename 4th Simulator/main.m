@@ -1,0 +1,260 @@
+
+close all
+clear all
+
+%Global variables
+global f
+global BS_antenna_pattern
+global h_UE
+global UE_sensibility
+global FS
+global BS
+global BS_at_the_back_of_FS
+global radius
+global m
+global n
+global area_of_interest
+global security_angle
+global security_circle_radius
+global users
+global PL_factor
+
+f = 15e9;           %Frequency in Hz
+PL_factor = 4;  %Path-loss factor
+
+BW = 40;    %System bandwidth in MHz
+
+security_angle = 40;
+security_circle_radius = 100;
+
+BS_max_gain = 40;
+% BS_antenna_pattern = beamforming_BS(BS_max_gain);   %BS_radiation pattern in dB
+BS_antenna_pattern = zeros(181);   %BS_radiation pattern in dB
+
+FS_max_gain = 60;
+% FS_antenna_pattern = beamforming_FS(FS_max_gain);   %FS_radiation pattern in dB 
+FS_antenna_pattern = zeros(181);   %BS_radiation pattern in dB
+
+h_UE = 1.7; %UEs height in meters
+h_BS = 6;   %BSs height in meters
+h_FS = 20;  %FSs height in meters
+
+FS_length = 800;    %FS link distance in meters
+FS = [0 0 h_FS];
+FS_sender = [0 -FS_length h_FS];
+
+%Thresholds
+FS_interference_threshold_per_MHz = -118;   %In dBm
+BS_interference_threshold_per_MHz = -118;   %In dBm
+UE_sensibility_per_MHz = -116;    %In dBm
+
+FS_interference_threshold = 10 * log10(10^((FS_interference_threshold_per_MHz)/10) * BW);
+BS_interference_threshold = 10 * log10(10^((BS_interference_threshold_per_MHz)/10) * BW);
+UE_sensibility = 10 * log10(10^((UE_sensibility_per_MHz)/10) * BW);
+
+timeslots_per_mode = 1;  %Number of timeslots allocated to each mode (UL and DL)
+timeslots_counter = timeslots_per_mode;
+
+radius = [200 100];
+style = {'-','--'};
+colors = jet(length(radius));
+
+area_of_interest = 2000; %Lenght of the squared area of interest. Only interference coming from entities lying within this area is going to be taken into account
+
+timeslots = 400;    %Timeslots considered in the simulation
+
+FS_interference = zeros(length(radius), timeslots);
+BS_interference = cell(length(radius), timeslots);
+BS_TXpower = cell(length(radius), timeslots);
+
+
+for m = 1:length(radius)   %Tries different radius values
+    
+BS = BS_deployer_hexagon(0, radius(m), h_BS,area_of_interest, FS); %Obtains a matrix with information about BSs. Different rows indicate different BSs. Different columns indicate different BSs details: [1 2 3] -> (x,y,z) location, [4] -> operating mode (UL(1) or DL(2))
+
+BS_surrounding_FS = find((BS(:,1) - FS(1,1)).^2 + (BS(:,2) - FS(1,2)).^2 == radius(m)^2);  %Look for BSs which are located no further than 'radius' meters away from FS   
+[a,b] = max(BS(BS_surrounding_FS,2)); %Among these, gets the one with the higher y value
+BS_at_the_back_of_FS = BS_surrounding_FS(b) ;
+
+BS(BS_at_the_back_of_FS + 3 : size(BS) + 2,:) = BS(BS_at_the_back_of_FS + 1 : size(BS),:);
+BS(BS_at_the_back_of_FS + 1 : BS_at_the_back_of_FS + 2, :) = repmat(BS(BS_at_the_back_of_FS, :),2,1); %The antenna of the cell at the back of the FS is provided with 2 extra antennas to serve users in the secure area
+BS(BS_at_the_back_of_FS + 1 : BS_at_the_back_of_FS + 2, 4) = 2;     %Auxiliary antennas are always in DL mode
+        
+BS_surrounding_FS = find((BS(:,1) - FS(1,1)).^2 + (BS(:,2) - FS(1,2)).^2 == radius(m)^2);  %Look for BSs which are located no further than 'radius' meters away from FS   
+
+users = zeros(size(BS,1), timeslots, 2);
+
+for i = 1:size(BS,1)
+    for j = 1:timeslots
+        users(i, j, [1 2 3]) = [User_in_this_cell(BS(i, [1 2])), h_UE];
+    end
+end
+
+users([BS_at_the_back_of_FS + 1 BS_at_the_back_of_FS + 2], :, :) = inf;
+
+for security_area = 0:0   %Runs two simulations for the SA deactivated and activated respectively
+    for n = 1:timeslots     %Simulation lasts a determined number of timeslots
+  
+%         figure(1)
+%         plot_deployment()
+        
+        
+%% Allocates a UE that will be served by the BS and the 
+        flag = 0;   %No auxiliary antenna in the BS at the back of FS is serving users
+        
+        for i = 1:size(BS,1)            
+            BS(i, [5 6 7]) = users(i, n, :);
+            if BS(i,4) == 1
+%                 plot(BS(i,5), BS(i,6), 'o','MarkerSize', 2, 'Color', [1 0 1], 'MarkerFaceColor', [1 0 1])
+            else
+%                 plot(BS(i,5), BS(i,6), 'o','MarkerSize', 2, 'Color', [1 0 0], 'MarkerFaceColor', [1 0 0])
+            end
+            
+            if BS(i,4) == 2 %Checks every BS in DL
+                if i ~= BS_at_the_back_of_FS + 1 & i ~= BS_at_the_back_of_FS + 2  %Auxiliary antennas cannot enter this IF
+                    if any(i == BS_surrounding_FS(:)) & i ~= BS_at_the_back_of_FS & security_area %Only directly surrounding antennas different from the one at the back of FS can enter this IF
+                     	flag = User_in_secure_area(i, flag);                
+                    end 
+                end
+            end            
+        end
+        
+%% Allocates power that will be transmitted in case of DL     
+        
+        for i = 1:size(BS,1)
+            if BS(i,4) == 2 & ~any(BS(i, [5 6 7]) == inf)
+                BS(i,8) = power_control(BS(i, [1 2 3]), BS(i, [5 6 7]), UE_sensibility);
+            else
+                BS(i,8) = -inf;
+            end
+        end
+                 
+        BS_TXpower_aux = [];
+         
+        if any(BS(:,4) == 2)
+            BS_TXpower_aux = BS(BS(:,4) == 2,8);
+            BS_TXpower_aux = BS_TXpower_aux(~any(isinf(BS_TXpower_aux), 2)); %Removes inf values
+        end
+         
+        if ~isempty(BS_TXpower_aux)
+            BS_TXpower{m,n} = BS_TXpower_aux;
+        end
+        
+%% Calculates the angles between entities
+        BS_to_FS_angles = zeros(size(BS,1), 4);
+        BS_to_BS_angles = zeros(size(BS,1), size(BS,1),4);
+% 
+%         for i = 1:size(BS,1)
+%             if ~any(BS(i,[5 6 7]) == inf)                
+%                 [BS_to_FS_angles(i,1), BS_to_FS_angles(i,2), BS_to_FS_angles(i,3), BS_to_FS_angles(i,4)] = angles_calculator(BS(i,[1 2 3]), BS(i, [5 6 7]), FS, FS_sender);                
+%                 for j = 1:size(BS,1)                    
+%                     if i ~= j & any(BS(i, [1 2 3]) ~= BS(j, [1 2 3]))
+%                         [BS_to_BS_angles(i,j,1), BS_to_BS_angles(i,j,2), BS_to_BS_angles(i,j,3), BS_to_BS_angles(i,j,4)] = angles_calculator(BS(i,[1 2 3]), BS(i, [5 6 7]), BS(j,[1 2 3]), BS(j, [5 6 7]));  
+%                     else
+%                         BS_to_BS_angles(i,j,:) = 0;             
+%                     end                    
+%                 end
+%             end               
+%         end
+%         
+%         BS_to_FS_angles = round(BS_to_FS_angles);
+%         BS_to_BS_angles = round(BS_to_BS_angles);
+
+        
+        %% Calculates interferences
+        FS_interference_aux = 0;
+        BS_interference_aux = zeros(size(BS,1), size(BS,1));        
+
+        for i = 1:size(BS,1)
+            
+            if BS(i,4) == 2 & (BS(i,1) <= area_of_interest/2) & (BS(i,1) >= -area_of_interest/2) & (BS(i,2) <= area_of_interest/2) & ( BS(i,2) >= -area_of_interest/2)
+                FS_interference_aux = FS_interference_aux + 10^((BS(i,8) - path_loss(BS(i,[1 2 3]), FS(1,:)) + BS_antenna_pattern(BS_to_FS_angles(i,1) + 1, BS_to_FS_angles(i,2) + 1) + FS_antenna_pattern(BS_to_FS_angles(i,3) + 1, BS_to_FS_angles(i,4) + 1))/10);
+            end
+            
+            if BS(i,4) == 1    %Checks the BSs in UL
+                
+                for j = 1:size(BS,1)
+                    
+                    if BS(j,4) == 2 & any(BS(i, [1 2 3]) ~= BS(j, [1 2 3]))    %Checks the BSs in DL                        
+                        
+                        BS_interference_aux(i,j) = BS_interference_aux(i,j) + 10^((BS(j,8) - path_loss(BS(j,[1 2 3]), BS(i,[1 2 3])) + BS_antenna_pattern(BS_to_BS_angles(j,i,1) + 1, BS_to_BS_angles(j,1,2) + 1) + BS_antenna_pattern(BS_to_BS_angles(j,1,3) + 1, BS_to_BS_angles(j,1,4) + 1))/10);
+                        
+                    end
+                    
+                end
+                
+            end
+                
+        end
+        
+        FS_interference(m,n) = 10 * log10(FS_interference_aux);
+        
+        if any(sum(BS_interference_aux,2))
+            BS_interference_aux = sum(BS_interference_aux,2);
+            BS_interference_aux(BS_interference_aux == 0) = [];
+            BS_interference{m,n} = 10 * log10(BS_interference_aux);
+        end
+        
+        
+        %%        
+        timeslots_counter = timeslots_counter - 1;
+        
+            if timeslots_counter == 0
+
+            index1 = find(BS(:,4) == 1);    %Looks for BSs in UL mode
+            index2 = find(BS(:,4) == 2);    %Looks for BSs in DL mode
+
+            BS(index1,4) = 2;   %Changes UL mode to DL mode
+            BS(index2,4) = 1;   %Changes DL mode to UL
+            
+            timeslots_counter = timeslots_per_mode;  %Reset the timeslot_counter
+            
+            end
+
+            timeslot = n
+            
+%             figure(1)
+%             hold off
+    end
+    
+    figure(10)
+    [y, x] = ecdf(FS_interference(m,:));
+    hold on
+    plot(x,y, char(style(security_area + 1)), 'Color', colors(m,:), 'LineWidth',2)
+        
+    figure(11)
+    [y, x] = ecdf(cell2mat(BS_TXpower(m,:)'));
+    hold on
+    plot(x,y, char(style(security_area + 1)), 'Color', colors(m,:), 'LineWidth',2)    
+    
+%     figure(12)
+%     [y, x] = ecdf(cell2mat(BS_interference(m,:)'));
+%     hold on
+%     plot(x,y, char(style(security_area + 1)), 'Color', colors(m,:), 'LineWidth',2)    
+    
+end
+
+end
+
+figure(10)
+plot([FS_interference_threshold, FS_interference_threshold], [0, 1], ':','Color',[1 0 0])
+title('FS interference', 'FontSize', 14, 'FontWeight', 'bold')
+xlabel('Interference level (dBm)', 'FontSize', 14, 'FontWeight', 'bold')
+ylabel('Percentage of timeslots under a certain interference level', 'FontSize', 14, 'FontWeight', 'bold')
+% legend(['R = ', num2str(radius(1)), ' -- No SA'], ['R = ', num2str(radius(1)), ' -- SA'], ['R = ', num2str(radius(2)), ' -- No SA'], ['R = ', num2str(radius(2)), ' -- SA'], ['R = ', num2str(radius(3)), ' -- No SA'], ['R = ', num2str(radius(3)), ' -- SA'], 'I_{thr}')
+
+figure(11)
+% plot([BS_TXpower_threshold, BS_TXpower_threshold], [0, 1], ':','Color',[1 0 0])
+% legend(['R = ', num2str(radius(1))], ['R = ', num2str(radius(2))], ['R = ', num2str(radius(3))])
+title('BS Tx power', 'FontSize', 14, 'FontWeight', 'bold')
+xlabel('BS Tx power (dBm)', 'FontSize', 14, 'FontWeight', 'bold')
+ylabel('Percentage of BSs under a certain Tx power', 'FontSize', 14, 'FontWeight', 'bold')
+% legend(['R = ', num2str(radius(1)), ' -- No SA'], ['R = ', num2str(radius(1)), ' -- SA'], ['R = ', num2str(radius(2)), ' -- No SA'], ['R = ', num2str(radius(2)), ' -- SA'], ['R = ', num2str(radius(3)), ' -- No SA'], ['R = ', num2str(radius(3)), ' -- SA'])
+
+% figure(12)
+% plot([BS_interference_threshold, BS_interference_threshold], [0, 1], ':','Color',[1 0 0])
+% % legend(['R = ', num2str(radius(1))], ['R = ', num2str(radius(2))], ['R = ', num2str(radius(3))])
+% title('BS interference', 'FontSize', 14, 'FontWeight', 'bold')
+% xlabel('Interference level (dBm)', 'FontSize', 14, 'FontWeight', 'bold')
+% ylabel('Percentage of BSs under a certain interference level', 'FontSize', 14, 'FontWeight', 'bold')
+% legend(['R = ', num2str(radius(1)), ' -- No SA'], ['R = ', num2str(radius(1)), ' -- SA'], ['R = ', num2str(radius(2)), ' -- No SA'], ['R = ', num2str(radius(2)), ' -- SA'], ['R = ', num2str(radius(3)), ' -- No SA'], ['R = ', num2str(radius(3)), ' -- SA'], 'I_{thr}')
